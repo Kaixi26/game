@@ -65,7 +65,5 @@ pub fn handle(self: *Self, nc_io: *nc.IO) !void {
                 _ = try nc_io.send(send_packet.packet, target);
             },
         }
-        // FIX: hacky way to force client on other side to read result before sending more packets
-        std.time.sleep(1E5);
     }
 }

@@ -189,15 +189,20 @@ pub const Deserializer = struct {
 
     allocator: Allocator,
     buf: []u8,
+    start: usize = 0,
 
     fn ensureBufferLen(self: *Self, n: usize) Error!void {
-        if (self.buf.len < n) {
+        if (self.buf[self.start..].len < n) {
             return Error.OutOfBytes;
         }
     }
 
     fn skipBufferBytes(self: *Self, n: usize) void {
-        self.buf = self.buf[n..];
+        self.start += n;
+    }
+
+    fn remaining(self: *Self) []u8 {
+        return self.buf[self.start..];
     }
 
     pub fn init(allocator: Allocator, buf: []u8) Self {
@@ -212,12 +217,12 @@ pub const Deserializer = struct {
             .Int => |_| {
                 try self.ensureBufferLen(@sizeOf(T));
                 defer self.skipBufferBytes(@sizeOf(T));
-                return @bitCast(self.buf[0..@sizeOf(T)].*);
+                return @bitCast(self.remaining()[0..@sizeOf(T)].*);
             },
             .Float => |_| {
                 try self.ensureBufferLen(@sizeOf(T));
                 defer self.skipBufferBytes(@sizeOf(T));
-                return @bitCast(self.buf[0..@sizeOf(T)].*);
+                return @bitCast(self.remaining()[0..@sizeOf(T)].*);
             },
             .Enum => |en| {
                 return @enumFromInt(try self.deserialize(en.tag_type));

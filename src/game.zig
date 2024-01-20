@@ -64,6 +64,7 @@ const GameContext = struct {
                     try self.game_state.players.append(self.game_state.allocator, .{ .id = payload.id, .x = 0, .y = 0 });
                 }
                 self.player_id = payload.id;
+                log.info("joined game with id {}", .{payload.id});
             },
             .update_players => |payload| {
                 for (payload.players) |player| {
@@ -179,7 +180,7 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
         }
 
         { // send packets
-            if (gctx.elapsed_frames % 60 == 0) {
+            if (gctx.elapsed_frames % 1 == 0) {
                 if (gctx.safeGetPlayer()) |player| {
                     try gctx.packet_send_manager.safeAppendSendPacket(.{ .packet = .{ .move = .{ .player = player.* } }, .kind = .broadcast });
                 }

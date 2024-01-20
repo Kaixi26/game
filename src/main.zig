@@ -7,6 +7,10 @@ const os = std.os;
 const game = @import("game.zig");
 const server = @import("server.zig");
 
+pub const std_options = struct {
+    pub const log_scope_levels = &@import("log.zig").scope_levels;
+};
+
 pub fn main() !void {
     var gpa = heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

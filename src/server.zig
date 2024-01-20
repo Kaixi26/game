@@ -14,8 +14,13 @@ var next_id: u64 = 1;
 const ServerContext = struct {
     const Self = @This();
 
-    ticks: u64 = 0,
     allocator: std.mem.Allocator,
+
+    ticks: u64 = 0,
+    tick_rate: u64 = 30,
+    previous_tick_ns: u128,
+    current_tick_ns: u128,
+
     clients: std.ArrayListUnmanaged(os.pollfd),
     client_mutex: std.Thread.Mutex,
     game_state: GameState,
@@ -29,6 +34,8 @@ const ServerContext = struct {
         nc_io.* = try nc.IO.init(allocator);
         return .{
             .allocator = allocator,
+            .previous_tick_ns = @intCast(std.time.nanoTimestamp()),
+            .current_tick_ns = @intCast(std.time.nanoTimestamp()),
             .clients = std.ArrayListUnmanaged(os.pollfd){},
             .client_mutex = std.Thread.Mutex{},
             .game_state = .{ .allocator = allocator },
@@ -80,15 +87,47 @@ const ServerContext = struct {
         }
     }
 
+    fn update_ticks(self: *Self) void {
+        self.ticks += 1;
+        self.previous_tick_ns = self.current_tick_ns;
+        self.current_tick_ns = @intCast(std.time.nanoTimestamp());
+    }
+
+    fn wait_next_tick(self: *Self) void {
+        const ns_per_tick = @divTrunc(std.time.ns_per_s, self.tick_rate);
+
+        const previous_ticks = @divTrunc(self.previous_tick_ns, ns_per_tick);
+        const current_ticks = @divTrunc(self.current_tick_ns, ns_per_tick);
+        const target_ticks = current_ticks + 1;
+
+        const target_tick_ns = target_ticks * ns_per_tick;
+
+        if (!(previous_ticks + 1 == current_ticks)) {
+            log.warn("ticks have been skipped!", .{});
+        }
+
+        std.time.sleep(@intCast(target_tick_ns - self.current_tick_ns));
+    }
+
+    fn deltaSeconds(self: *Self) f32 {
+        return @as(f32, @floatFromInt(self.current_tick_ns - self.previous_tick_ns)) / std.time.ns_per_s;
+    }
+
     pub fn tick(self: *Self) !void {
+        self.update_ticks();
+        defer self.wait_next_tick();
+
         {
             self.game_state.lock();
             self.game_state.unlock();
             if (self.game_state.find(69)) |player| {
-                player.x += 2.5;
-            }
-            for (self.game_state.players.items) |p| {
-                log.debug("{}", .{p});
+                player.x += 5 * self.deltaSeconds();
+                if (player.x > 10) {
+                    player.x = -player.x;
+                }
+                if (self.ticks % 60 == 0) {
+                    log.debug("{d:.3} {d:.3} {d:.3}", .{ player.x, self.deltaSeconds(), 5 * self.deltaSeconds() });
+                }
             }
         }
         { // handle packets
@@ -127,7 +166,7 @@ pub fn accept_connections(nc_io: *nc.IO, sockfd: os.socket_t) !void {
 
 pub fn start(allocator: mem.Allocator, address: net.Address) !void {
     var sctx = try ServerContext.init(allocator);
-    try sctx.game_state.append(.{ .id = 69, .x = 0xbb, .y = 0xbb });
+    try sctx.game_state.append(.{ .id = 69, .x = 0, .y = 0 });
 
     var sockfd: os.socket_t = try os.socket(os.AF.INET, os.SOCK.STREAM, 0);
     try os.setsockopt(sockfd, os.SOL.SOCKET, os.SO.REUSEADDR, &mem.toBytes(@as(c_int, 1)));
@@ -148,7 +187,7 @@ pub fn start(allocator: mem.Allocator, address: net.Address) !void {
 
     while (true) {
         try sctx.tick();
-        std.time.sleep(1E8);
+        std.time.sleep(1E6);
     }
 }
 
