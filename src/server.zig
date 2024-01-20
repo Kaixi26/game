@@ -3,134 +3,152 @@ const heap = std.heap;
 const mem = std.mem;
 const net = std.net;
 const os = std.os;
-const log = std.log;
+const log = std.log.scoped(.server);
 const Protocol = @import("Protocol.zig");
 const GameState = @import("GameState.zig");
 const Player = @import("Player.zig").Player;
+const nc = @import("netcode/netcode.zig");
 
 var next_id: u64 = 1;
 
 const ServerContext = struct {
+    const Self = @This();
+
+    ticks: u64 = 0,
     allocator: std.mem.Allocator,
     clients: std.ArrayListUnmanaged(os.pollfd),
     client_mutex: std.Thread.Mutex,
     game_state: GameState,
+    nc_io: *nc.IO,
 
-    const Self = @This();
+    packet_send_manager: nc.PacketSendManager,
+    packet_recv_manager: nc.PacketReceiveManager,
 
-    pub fn append_client(self: *Self, client: os.socket_t) !void {
-        self.client_mutex.lock();
-        defer self.client_mutex.unlock();
-        try self.clients.append(self.allocator, .{
-            .fd = client,
-            .events = os.POLL.IN,
-            .revents = 0,
-        });
+    pub fn init(allocator: mem.Allocator) !Self {
+        var nc_io = try allocator.create(nc.IO);
+        nc_io.* = try nc.IO.init(allocator);
+        return .{
+            .allocator = allocator,
+            .clients = std.ArrayListUnmanaged(os.pollfd){},
+            .client_mutex = std.Thread.Mutex{},
+            .game_state = .{ .allocator = allocator },
+            .nc_io = nc_io,
+            .packet_send_manager = nc.PacketSendManager.init(allocator),
+            .packet_recv_manager = nc.PacketReceiveManager.init(allocator),
+        };
     }
 
-    pub fn get_clients(self: *Self) []os.pollfd {
-        self.client_mutex.lock();
-        defer self.client_mutex.unlock();
-        return self.clients.items;
+    pub fn handle_received_packet(self: *Self, received_packet: nc.IO.ReceivedPacket) !void {
+        defer received_packet.deinit();
+
+        switch (received_packet.packet.*) {
+            .ping => {
+                try self.packet_send_manager.safeAppendSendPacket(.{
+                    .packet = .{ .ping = .{} },
+                    .kind = .{ .target = received_packet.connection_id },
+                });
+                self.packet_send_manager.signalPacketsAdded();
+            },
+            .join => {
+                const player = blk: {
+                    self.game_state.lock();
+                    defer self.game_state.unlock();
+                    defer next_id += 1;
+
+                    const player = Player{ .id = next_id, .x = 0, .y = 0 };
+                    try self.game_state.append(player);
+                    break :blk player;
+                };
+
+                try self.packet_send_manager.safeAppendSendPacket(.{
+                    .packet = .{ .join_ok = .{ .id = player.id } },
+                    .kind = .{ .target = received_packet.connection_id },
+                });
+                self.packet_send_manager.signalPacketsAdded();
+            },
+            .move => |payload| {
+                self.game_state.lock();
+                defer self.game_state.unlock();
+
+                if (self.game_state.find(payload.player.id)) |player| {
+                    player.* = payload.player;
+                }
+            },
+            else => {
+                log.err("unhandled packet {}", .{received_packet});
+            },
+        }
     }
 
-    pub fn remove_client(self: *Self, i: usize) void {
-        self.client_mutex.lock();
-        defer self.client_mutex.unlock();
-        _ = self.clients.swapRemove(i);
+    pub fn tick(self: *Self) !void {
+        {
+            self.game_state.lock();
+            self.game_state.unlock();
+            if (self.game_state.find(69)) |player| {
+                player.x += 2.5;
+            }
+            for (self.game_state.players.items) |p| {
+                log.debug("{}", .{p});
+            }
+        }
+        { // handle packets
+            self.packet_recv_manager.mutex.lock();
+            defer self.packet_recv_manager.mutex.unlock();
+
+            for (self.packet_recv_manager.received_packets.items) |received_packet| {
+                try self.handle_received_packet(received_packet);
+            }
+            self.packet_recv_manager.received_packets.clearRetainingCapacity();
+        }
+
+        { // send packets
+            self.game_state.lock();
+            defer self.game_state.unlock();
+
+            try self.packet_send_manager.safeAppendSendPacket(.{
+                .packet = .{ .update_players = .{ .players = self.game_state.players.items } },
+                .kind = .broadcast,
+            });
+            self.packet_send_manager.signalPacketsAdded();
+        }
     }
 };
 
-pub fn client_handler(server_context: *ServerContext) !void {
-    var buf: [Protocol.Packet.max_length]u8 = undefined;
+pub fn accept_connections(nc_io: *nc.IO, sockfd: os.socket_t) !void {
     while (true) {
-        var clients: []os.pollfd = server_context.get_clients();
-        const ready_clients = try os.poll(clients, 1000);
-        log.info("SERVER: ready clients: {}/{}", .{ ready_clients, clients.len });
+        var accepted_addr: net.Address = undefined;
+        var addr_len: os.socklen_t = @sizeOf(@TypeOf(accepted_addr));
+        var client: os.socket_t = try os.accept(sockfd, &accepted_addr.any, &addr_len, os.SOCK.CLOEXEC);
+        log.info("accepted client on {}", .{accepted_addr});
 
-        if (ready_clients > 0) {
-            var n = clients.len;
-            while (n > 0) : (n -= 1) {
-                var i = n - 1;
-                var client = clients[i];
-                if ((client.revents & os.POLL.HUP) != 0) {
-                    os.close(client.fd);
-                    server_context.remove_client(i);
-                } else if ((client.revents & os.POLL.IN) != 0) {
-                    var rd = try os.read(client.fd, &buf);
-                    _ = rd;
-                    var client_message = try Protocol.Packet.decode(&buf);
-                    log.info("SERVER: read data {any}", .{client_message});
-                    const client_data = client_message.extractData();
-                    switch (client_data) {
-                        .ping => {
-                            var pong_packet = Protocol.Packet.pong();
-                            pong_packet.encode(&buf);
-                            _ = try os.write(client.fd, &buf);
-                        },
-                        .join => {
-                            server_context.game_state.lock();
-                            defer server_context.game_state.unlock();
-                            defer next_id += 1;
-
-                            const player = Player{ .id = next_id, .x = 0, .y = 0 };
-                            try server_context.game_state.append(player);
-                            var packet = Protocol.Packet.joinOk(player);
-                            packet.encode(&buf);
-                            _ = try os.write(client.fd, &buf);
-                        },
-                        .move => |updated_player| {
-                            server_context.game_state.lock();
-                            defer server_context.game_state.unlock();
-
-                            if (server_context.game_state.find(updated_player.id)) |player| {
-                                player.* = updated_player;
-                            }
-
-                            var packet = Protocol.Packet.update_players(server_context.game_state.players.items);
-                            packet.encode(&buf);
-                            _ = try os.write(client.fd, &buf);
-                        },
-                        else => {
-                            log.err("SERVER: Unhandled packet {}", .{client_message});
-                        },
-                    }
-                } else if (client.revents != 0) {
-                    log.warn("SERVER: unhandled pool revent 0x{x}", .{client.revents});
-                }
-            }
-        }
+        try nc_io.addConnection(client);
     }
 }
 
 pub fn start(allocator: mem.Allocator, address: net.Address) !void {
+    var sctx = try ServerContext.init(allocator);
+    try sctx.game_state.append(.{ .id = 69, .x = 0xbb, .y = 0xbb });
+
     var sockfd: os.socket_t = try os.socket(os.AF.INET, os.SOCK.STREAM, 0);
     try os.setsockopt(sockfd, os.SOL.SOCKET, os.SO.REUSEADDR, &mem.toBytes(@as(c_int, 1)));
-    log.info("SERVER: started on {}", .{address});
+    log.info("started on {}", .{address});
     defer os.closeSocket(sockfd);
 
     try os.bind(sockfd, &address.any, address.getOsSockLen());
     try os.listen(sockfd, 5);
 
-    var server_context = ServerContext{
-        .allocator = allocator,
-        .clients = std.ArrayListUnmanaged(os.pollfd){},
-        .client_mutex = std.Thread.Mutex{},
-        .game_state = .{ .allocator = allocator },
-    };
+    var receive_handler = try std.Thread.spawn(.{}, nc.PacketReceiveManager.handle, .{ &sctx.packet_recv_manager, sctx.nc_io });
+    defer receive_handler.join();
 
-    try server_context.game_state.append(.{ .id = 69, .x = 0xbb, .y = 0xbb });
+    var send_handler = try std.Thread.spawn(.{}, nc.PacketSendManager.handle, .{ &sctx.packet_send_manager, sctx.nc_io });
+    defer send_handler.join();
 
-    var handler = try std.Thread.spawn(.{}, client_handler, .{&server_context});
-    defer handler.join();
+    var connection_handler = try std.Thread.spawn(.{}, accept_connections, .{ sctx.nc_io, sockfd });
+    defer connection_handler.join();
 
     while (true) {
-        var accepted_addr: net.Address = undefined;
-        var addr_len: os.socklen_t = @sizeOf(@TypeOf(accepted_addr));
-        var client: os.socket_t = try os.accept(sockfd, &accepted_addr.any, &addr_len, os.SOCK.CLOEXEC);
-        log.info("SERVER: accepted client on {}", .{accepted_addr});
-
-        try server_context.append_client(client);
+        try sctx.tick();
+        std.time.sleep(1E8);
     }
 }
 

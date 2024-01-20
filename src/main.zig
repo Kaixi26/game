@@ -22,3 +22,14 @@ pub fn main() !void {
         log.err("GAME: Failed to start game {}.", .{err});
     };
 }
+
+test "main" {
+    const nc = @import("netcode/netcode.zig");
+    std.testing.refAllDecls(@import("Protocol.zig"));
+    std.testing.refAllDecls(nc.IO);
+
+    var buf: [10240]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var nc_io = try nc.IO.init(fba.allocator());
+    try nc_io.addConnection(69);
+}

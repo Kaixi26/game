@@ -1,135 +1,274 @@
 const std = @import("std");
 const Player = @import("Player.zig").Player;
+const Allocator = std.mem.Allocator;
 
-pub const Header = packed struct {
-    kind: Packet.Kind,
-    message_length: u16,
+pub const PacketHeader = packed struct {
+    const Self = @This();
+
+    kind: PacketKind,
+    packet_len: u16,
 };
 
-pub const Packet = struct {
+pub const PacketKind = enum(u8) {
+    ping = 0x00,
+    pong = 0x01,
+    join = 0x02,
+    join_ok = 0x03,
+    move = 0x04,
+    update_players = 0x05,
+};
+
+pub const Packet = union(PacketKind) {
     const Self = @This();
-    pub const max_length = 1024;
-    const PacketBufType = [max_length - @sizeOf(Header)]u8;
 
-    header: Header,
-    buf: PacketBufType = undefined,
+    ping: Ping,
+    pong: Pong,
+    join: Join,
+    join_ok: JoinOk,
+    move: Move,
+    update_players: UpdatePlayers,
 
-    const Kind = enum(u8) {
-        ping = 0x00,
-        pong = 0x01,
-        join = 0x02,
-        join_ok = 0x03,
-        move = 0x04,
-        update_players = 0x05,
+    pub const Ping = struct {};
+
+    pub const Pong = struct {};
+
+    pub const Join = struct {};
+
+    pub const JoinOk = struct {
+        id: u64,
     };
 
-    const PacketData = union(Kind) {
-        ping: void,
-        pong: void,
-        join: void,
-        join_ok: Player,
-        move: Player,
-        update_players: []align(1) const Player,
+    pub const Move = struct {
+        player: Player,
     };
 
-    pub fn encode(self: Self, buf: []u8) void {
-        buf[0..(@divExact(@bitSizeOf(Header), 8))].* = @bitCast(self.header);
-        buf[(@divExact(@bitSizeOf(Header), 8))..][0..@sizeOf(PacketBufType)].* = self.buf;
-    }
+    pub const UpdatePlayers = struct {
+        players: []Player,
+    };
 
-    pub fn decode(buf: []u8) !Packet {
-        const header: Header = @bitCast(buf[0 .. @sizeOf(Header) - 1].*);
-        return .{
-            .header = header,
-            .buf = buf[@sizeOf(Header) - 1 ..][0..@sizeOf(PacketBufType)].*,
+    pub fn serialize(self: Self, ser: *Serializer) Serializer.Error!void {
+        const kind: PacketKind = @as(PacketKind, self);
+
+        var header = PacketHeader{
+            .kind = kind,
+            .packet_len = undefined,
         };
-    }
+        // Header
+        try ser.serialize(header.kind);
+        var cursor_packet_len = ser.cursor;
+        try ser.serialize(header.packet_len);
 
-    pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-
-        try writer.print("CPacket{{{}}}", .{self.header.kind});
-    }
-
-    pub fn ping() Packet {
-        return .{ .header = .{ .kind = .ping, .message_length = 0 } };
-    }
-
-    pub fn pong() Packet {
-        return .{ .header = .{ .kind = .pong, .message_length = 0 } };
-    }
-
-    pub fn join() Packet {
-        return .{ .header = .{ .kind = .join, .message_length = 0 } };
-    }
-
-    pub fn joinOk(player: Player) Packet {
-        var buf: PacketBufType = undefined;
-        buf[0..@sizeOf(Player)].* = @bitCast(player);
-        return .{
-            .header = .{ .kind = .join_ok, .message_length = @sizeOf(Player) },
-            .buf = buf,
-        };
-    }
-
-    pub fn move(player: Player) Packet {
-        var buf: PacketBufType = undefined;
-        buf[0..@sizeOf(Player)].* = @bitCast(player);
-        return .{
-            .header = .{ .kind = .move, .message_length = @sizeOf(Player) },
-            .buf = buf,
-        };
-    }
-
-    pub fn update_players(players: []Player) Packet {
-        const message_length: usize = @sizeOf(u64) + players.len * @sizeOf(Player);
-        std.debug.assert(message_length < @sizeOf(PacketBufType));
-
-        var buf: PacketBufType = undefined;
-        buf[0] = @as(u8, @intCast(players.len));
-        for (players, 0..) |player, i| {
-            const begin = @sizeOf(u64) + @sizeOf(Player) * i;
-            buf[begin..][0..@sizeOf(Player)].* = @bitCast(player);
+        // Payload
+        switch (self) {
+            .join_ok => |v| {
+                try ser.serialize(v.id);
+            },
+            .move => |packet| {
+                try ser.serialize(packet.player);
+            },
+            .update_players => |packet| {
+                std.debug.assert(packet.players.len < std.math.maxInt(u8));
+                try ser.serialize(@as(u8, @intCast(packet.players.len)));
+                for (packet.players) |p| {
+                    try ser.serialize(p);
+                }
+            },
+            else => {},
         }
-        return .{
-            .header = .{ .kind = .update_players, .message_length = @sizeOf(Player) },
-            .buf = buf,
-        };
+
+        // Set up packet length
+        {
+            header.packet_len = @intCast(ser.cursor);
+            const cursor = ser.jump(cursor_packet_len);
+            try ser.serialize(header.packet_len);
+            _ = ser.jump(cursor);
+        }
     }
 
-    pub fn extractData(self: Self) PacketData {
-        switch (self.header.kind) {
+    pub fn deserialize(des: *Deserializer) Deserializer.Error!Self {
+        var header: PacketHeader = undefined;
+        header.kind = try des.deserialize(PacketKind);
+        header.packet_len = try des.deserialize(u16);
+
+        switch (header.kind) {
             .ping => {
-                return .{ .ping = {} };
+                return .{ .ping = .{} };
             },
             .pong => {
-                return .{ .pong = {} };
+                return .{ .pong = .{} };
             },
             .join => {
-                return .{ .join = {} };
+                return .{ .join = .{} };
             },
             .join_ok => {
-                return .{ .join_ok = @bitCast(self.buf[0..@sizeOf(Player)].*) };
+                return .{
+                    .join_ok = .{ .id = try des.deserialize(u64) },
+                };
             },
             .move => {
-                return .{ .move = @bitCast(self.buf[0..@sizeOf(Player)].*) };
+                return .{
+                    .move = .{ .player = try des.deserialize(Player) },
+                };
             },
             .update_players => {
-                var players: []align(1) const Player = undefined;
-                players.ptr = @alignCast(@ptrCast(self.buf[@sizeOf(u64)..]));
-                players.len = self.buf[0];
-                for (0..players.len) |i| {
-                    const begin = @sizeOf(u64) + @sizeOf(Player) * i;
-                    var player: Player = @bitCast(self.buf[begin..][0..@sizeOf(Player)].*);
-                    std.log.debug("SERVER: HUH? {}", .{player});
+                const len = try des.deserialize(u8);
+                var i: usize = 0;
+                var arr = std.ArrayListUnmanaged(Player){};
+                while (i < len) : (i += 1) {
+                    try arr.append(des.allocator, try des.deserialize(Player));
                 }
-                var player2: Player = @as(Player, @bitCast(self.buf[@sizeOf(u64) + @sizeOf(Player) ..][0..@sizeOf(Player)].*));
-                _ = player2;
-                std.log.debug("SERVER: HUH? {}", .{std.fmt.fmtSliceHexLower(self.buf[@sizeOf(u64)..])});
-                //std.log.debug("SERVER: HUH? {}", .{player2});
-                return .{ .update_players = players };
+                return .{
+                    .update_players = .{ .players = arr.items },
+                };
             },
         }
     }
 };
+
+pub const Serializer = struct {
+    const Self = @This();
+    pub const Error = Allocator.Error;
+
+    allocator: Allocator,
+    buf: std.ArrayListUnmanaged(u8),
+    cursor: usize,
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .buf = std.ArrayListUnmanaged(u8){},
+            .cursor = 0,
+        };
+    }
+
+    pub fn jump(self: *Self, new_cursor: usize) usize {
+        const saved_cursor = self.cursor;
+        self.cursor = new_cursor;
+
+        return saved_cursor;
+    }
+
+    pub fn serialize(self: *Self, value: anytype) Error!void {
+        const T = @TypeOf(value);
+        switch (@typeInfo(T)) {
+            .Int => |_| {
+                var buf: [@sizeOf(T)]u8 = @bitCast(value);
+                try self.buf.ensureTotalCapacity(self.allocator, self.cursor + @sizeOf(T));
+                self.buf.allocatedSlice()[self.cursor..][0..@sizeOf(T)].* = buf;
+                self.cursor += @sizeOf(T);
+                self.buf.items.len = @max(self.cursor, self.buf.items.len);
+            },
+            .Float => |_| {
+                var buf: [@sizeOf(T)]u8 = @bitCast(value);
+                try self.buf.ensureTotalCapacity(self.allocator, self.cursor + @sizeOf(T));
+                self.buf.allocatedSlice()[self.cursor..][0..@sizeOf(T)].* = buf;
+                self.cursor += @sizeOf(T);
+                self.buf.items.len = @max(self.cursor, self.buf.items.len);
+            },
+            .Enum => |_| {
+                try self.serialize(@intFromEnum(value));
+            },
+            .Union => |_| {
+                return try value.serialize(self);
+            },
+            .Struct => |_| {
+                try value.serialize(self);
+            },
+            else => {
+                @compileError(std.fmt.comptimePrint("Cannot serialize value of type `{}`", .{T}));
+            },
+        }
+    }
+};
+
+pub const Deserializer = struct {
+    const Self = @This();
+    pub const Error = error{
+        OutOfBytes,
+    } || Allocator.Error;
+
+    allocator: Allocator,
+    buf: []u8,
+
+    fn ensureBufferLen(self: *Self, n: usize) Error!void {
+        if (self.buf.len < n) {
+            return Error.OutOfBytes;
+        }
+    }
+
+    fn skipBufferBytes(self: *Self, n: usize) void {
+        self.buf = self.buf[n..];
+    }
+
+    pub fn init(allocator: Allocator, buf: []u8) Self {
+        return .{
+            .allocator = allocator,
+            .buf = buf,
+        };
+    }
+
+    pub fn deserialize(self: *Self, comptime T: type) Error!T {
+        switch (@typeInfo(T)) {
+            .Int => |_| {
+                try self.ensureBufferLen(@sizeOf(T));
+                defer self.skipBufferBytes(@sizeOf(T));
+                return @bitCast(self.buf[0..@sizeOf(T)].*);
+            },
+            .Float => |_| {
+                try self.ensureBufferLen(@sizeOf(T));
+                defer self.skipBufferBytes(@sizeOf(T));
+                return @bitCast(self.buf[0..@sizeOf(T)].*);
+            },
+            .Enum => |en| {
+                return @enumFromInt(try self.deserialize(en.tag_type));
+            },
+            .Union => |_| {
+                return try T.deserialize(self);
+            },
+            .Struct => |_| {
+                return try T.deserialize(self);
+            },
+            else => {
+                @compileError(std.fmt.comptimePrint("Cannot deserialize value of type `{}`", .{T}));
+            },
+        }
+    }
+};
+
+fn assertPacketEqualAfterEncode(packet: Packet) !void {
+    var buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    var allocator = fba.allocator();
+
+    var ser = Serializer.init(allocator);
+    try ser.serialize(packet);
+    var de = Deserializer.init(allocator, ser.buf.items);
+    var de_packet = try de.deserialize(Packet);
+
+    try std.testing.expectEqualDeep(packet, de_packet);
+}
+
+test "Encode and decode ping" {
+    try assertPacketEqualAfterEncode(Packet{ .ping = .{} });
+}
+
+test "Encode and decode pong" {
+    try assertPacketEqualAfterEncode(Packet{ .pong = .{} });
+}
+
+test "Encode and decode join" {
+    try assertPacketEqualAfterEncode(Packet{ .join = .{} });
+}
+
+test "Encode and decode join_ok" {
+    try assertPacketEqualAfterEncode(Packet{ .join_ok = .{ .id = 69 } });
+}
+
+test "Encode and decode move_players" {
+    var players = [_]Player{
+        .{ .id = 1, .x = 1.2, .y = 2.5 },
+        .{ .id = 2, .x = 2.2, .y = 2.5 },
+        .{ .id = 3, .x = 3.2, .y = 2.5 },
+    };
+    try assertPacketEqualAfterEncode(Packet{ .update_players = .{ .players = &players } });
+}
