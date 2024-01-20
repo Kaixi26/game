@@ -1,12 +1,13 @@
 const std = @import("std");
-const Protocol = @import("../Protocol.zig");
-const Packet = Protocol.Packet;
-const Self = @This();
+const nc = @import("netcode.zig");
+const Packet = nc.Packet;
 const Allocator = std.mem.Allocator;
 const os = std.os;
-const Serializer = Protocol.Serializer;
-const Deserializer = Protocol.Deserializer;
-const log = @import("netcode.zig").log;
+const Serializer = nc.Serializer;
+const Deserializer = nc.Deserializer;
+const log = nc.log;
+
+const Self = @This();
 
 pub const ConnectionId = u64;
 pub const Connection = struct {
@@ -220,6 +221,7 @@ pub fn receive(self: *Self) !ReceivedPacket {
                         //break :blk packet;
                     } else if (poll.revents != 0) {
                         log.warn("SERVER: unhandled pool revent 0x{x}", .{poll.revents});
+                        unreachable;
                     }
                 }
             }

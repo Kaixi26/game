@@ -3,10 +3,9 @@ const heap = std.heap;
 const io = std.io;
 const os = std.os;
 const net = std.net;
-const log = std.log.scoped(.Game);
+const log = @import("log.zig").game;
 const GameState = @import("GameState.zig");
-const Protocol = @import("Protocol.zig");
-const Player = @import("Player.zig").Player;
+const Player = @import("Player.zig");
 const nc = @import("netcode/netcode.zig");
 const rl = @cImport({
     @cInclude("raylib.h");

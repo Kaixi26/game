@@ -1,5 +1,5 @@
 const std = @import("std");
-const Player = @import("Player.zig").Player;
+const Player = @import("Player.zig");
 const Mutex = std.Thread.Mutex;
 
 const Self = @This();

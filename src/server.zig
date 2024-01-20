@@ -4,9 +4,8 @@ const mem = std.mem;
 const net = std.net;
 const os = std.os;
 const log = std.log.scoped(.server);
-const Protocol = @import("Protocol.zig");
 const GameState = @import("GameState.zig");
-const Player = @import("Player.zig").Player;
+const Player = @import("Player.zig");
 const nc = @import("netcode/netcode.zig");
 
 var next_id: u64 = 1;

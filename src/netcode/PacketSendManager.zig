@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const nc = @import("netcode.zig");
-const Packet = @import("../Protocol.zig").Packet;
+const Packet = nc.Packet;
 
 const Self = @This();
 

@@ -29,7 +29,7 @@ pub fn main() !void {
 
 test "main" {
     const nc = @import("netcode/netcode.zig");
-    std.testing.refAllDecls(@import("Protocol.zig"));
+    std.testing.refAllDecls(@import("netcode/Packet.zig"));
     std.testing.refAllDecls(nc.IO);
 
     var buf: [10240]u8 = undefined;
