@@ -7,6 +7,7 @@ const log = @import("log.zig").game;
 const GameState = @import("GameState.zig");
 const Player = @import("Player.zig");
 const nc = @import("netcode/netcode.zig");
+const argsParser = @import("args.zig");
 const rl = @cImport({
     @cInclude("raylib.h");
     @cInclude("rlgl.h");
@@ -98,8 +99,38 @@ pub fn handle_connection(gctx: *GameContext, address: net.Address) !void {
     defer send_handler.join();
 }
 
-pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
+const GameArgsSpec = struct {
+    host: []const u8 = "0.0.0.0"[0..],
+    port: u16 = 1337,
+
+    pub const shorthands = .{
+        .h = "host",
+        .p = "port",
+    };
+
+    pub const meta = .{
+        .option_docs = .{
+            .host = "TCP host IP to connect to",
+            .port = "TCP host port to connect to",
+        },
+    };
+};
+
+pub fn start(allocator: std.mem.Allocator) !void {
     var gctx = try GameContext.init(allocator);
+
+    const parsed_args = argsParser.parseForCurrentProcess(GameArgsSpec, allocator, .print) catch |err| {
+        const out = std.io.getStdOut();
+        var writer = std.io.bufferedWriter(out.writer());
+        try argsParser.printHelp(GameArgsSpec, "game", writer.writer());
+        try writer.flush();
+        return err;
+    };
+    defer parsed_args.deinit();
+
+    std.debug.print("{s}", .{parsed_args.options.host});
+
+    var address = try std.net.Address.parseIp(parsed_args.options.host, parsed_args.options.port);
 
     var handler = try std.Thread.spawn(.{}, handle_connection, .{ &gctx, address });
     defer handler.join();
@@ -115,10 +146,13 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
     rl.SetTargetFPS(60);
 
     while (!rl.WindowShouldClose()) {
+        var scratchpad: [1024]u8 = undefined;
         var camera = std.mem.zeroes(rl.Camera2D);
         camera.zoom = 1;
         camera.offset.x = @as(f32, @floatFromInt(rl.GetScreenWidth())) / 2;
         camera.offset.y = @as(f32, @floatFromInt(rl.GetScreenHeight())) / 2;
+
+        rl.ClearBackground(rl.RAYWHITE);
 
         if (gctx.safeGetPlayer()) |player| {
             if (rl.IsKeyDown(rl.KEY_UP)) {
@@ -140,15 +174,7 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
         rl.BeginDrawing();
         defer rl.EndDrawing();
 
-        {
-            var buf: [1024]u8 = undefined;
-            var ping_text = try std.fmt.bufPrint(&buf, "PING: {}" ++ .{0}, .{gctx.ping.load(.Monotonic)});
-            rl.DrawFPS(0, 0);
-            rl.DrawText(@as([*:0]const u8, @ptrCast(ping_text)), 0, 20, 20, rl.LIME);
-        }
-
         rl.BeginMode2D(camera);
-        defer rl.EndMode2D();
 
         { // Draw grid and reference point at 0,0
             rl.rlPushMatrix();
@@ -159,12 +185,14 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
             rl.DrawCircle(0, 0, 10, rl.PINK);
         }
 
-        {
+        { // Draw players
             gctx.game_state.lock();
             defer gctx.game_state.unlock();
 
             for (gctx.game_state.players.items) |player| {
                 rl.DrawCircle(@intFromFloat(player.x), @intFromFloat(player.y), @as(f32, @floatFromInt(rl.GetScreenWidth())) / 16, rl.BLUE);
+                var ping_text = try std.fmt.bufPrint(&scratchpad, "{}" ++ .{0}, .{player.id});
+                rl.DrawText(@as([*:0]const u8, @ptrCast(ping_text)), @intFromFloat(player.x), @intFromFloat(player.y), 20, rl.BLACK);
             }
         }
 
@@ -178,6 +206,14 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
             gctx.packet_recv_manager.received_packets.clearRetainingCapacity();
         }
 
+        rl.EndMode2D();
+
+        {
+            var ping_text = try std.fmt.bufPrint(&scratchpad, "PING: {}" ++ .{0}, .{gctx.ping.load(.Monotonic)});
+            rl.DrawFPS(0, 0);
+            rl.DrawText(@as([*:0]const u8, @ptrCast(ping_text)), 0, 20, 20, rl.LIME);
+        }
+
         { // send packets
             if (gctx.elapsed_frames % 1 == 0) {
                 if (gctx.safeGetPlayer()) |player| {
@@ -187,8 +223,6 @@ pub fn start(allocator: std.mem.Allocator, address: net.Address) !void {
 
             gctx.packet_send_manager.signalPacketsAdded();
         }
-
-        rl.ClearBackground(rl.RAYWHITE);
 
         const frames = @atomicRmw(u64, &gctx.elapsed_frames, .Add, 1, .Monotonic);
         _ = frames;
@@ -200,7 +234,5 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     var allocator = gpa.allocator();
 
-    var address = try std.net.Address.parseIp("0.0.0.0", 1337);
-
-    try start(allocator, address);
+    try start(allocator);
 }

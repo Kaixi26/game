@@ -3,10 +3,13 @@ const heap = std.heap;
 const mem = std.mem;
 const net = std.net;
 const os = std.os;
-const log = std.log.scoped(.server);
+const log = @import("log.zig").server;
 const GameState = @import("GameState.zig");
 const Player = @import("Player.zig");
 const nc = @import("netcode/netcode.zig");
+const rl = @cImport({
+    @cInclude("raymath.h");
+});
 
 var next_id: u64 = 1;
 
@@ -194,8 +197,10 @@ pub fn main() !void {
     var gpa = heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var allocator = gpa.allocator();
+    var x: rl.Vector2 = undefined;
+    std.debug.print("{any}", .{x});
 
     var address = try net.Address.parseIp("0.0.0.0", 1337);
 
-    start(allocator, address);
+    try start(allocator, address);
 }

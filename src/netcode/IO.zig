@@ -70,6 +70,7 @@ packet_buffers: [max_packets]([2048]u8),
 // TODO: this can be static
 free_packet_buffers_slots: std.ArrayList(PacketSlot),
 
+connections_mutex: std.Thread.Mutex = .{},
 connections: std.SegmentedList(Connection, 0),
 // TODO: This invalidates for polling when resized
 //       Somehow base off indices and use negative fd for disconnected ones?
@@ -112,10 +113,20 @@ fn freePacketSlot(self: *Self, slot: PacketSlot) void {
 // Assumes a single thread calls this
 // TODO: need to rethink connections, they can't be removed, maybe allow nullability
 pub fn addConnection(self: *Self, sock: os.socket_t) Allocator.Error!void {
+    self.connections_mutex.lock();
+    defer self.connections_mutex.unlock();
+    std.debug.assert(sock >= 0);
+
     defer self.next_connection_id += 1;
     try self.connections.append(self.allocator, Connection.init(self.next_connection_id, sock));
     const conn: *Connection = self.connections.at(self.connections.len - 1);
     try self.polls.append(self.allocator, .{ .poll = .{ .fd = sock, .events = os.POLL.IN, .revents = 0 }, .conn = conn });
+}
+
+fn unsafeRemoveConnection(self: *Self, i: usize) Allocator.Error!void {
+    self.polls.items(.poll)[i].fd = -1;
+    os.close(self.polls.items(.conn)[i].sock);
+    self.polls.items(.conn)[i].sock = -1;
 }
 
 //enum SendTarget = Connnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -131,14 +142,16 @@ pub fn broadcast(self: *Self, packet: Packet) !void {
 
     for (0..self.connections.len) |i| {
         const conn: *Connection = self.connections.at(i);
-        _ = try os.write(conn.sock, ser.buf.items);
+        if (conn.sock >= 0) {
+            _ = try os.write(conn.sock, ser.buf.items);
+        }
     }
 
     //log.debug("Packet broadcasted {} to {} connections", .{ packet, self.connections.len });
 }
 
 pub fn send(self: *Self, packet: Packet, target: ConnectionId) !void {
-    var buf: [1024]u8 = undefined;
+    var buf: [Packet.max_transmission_unit]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     var ser = Serializer.init(fba.allocator());
     ser.serialize(packet) catch |err| {
@@ -180,45 +193,43 @@ pub fn receive(self: *Self) !ReceivedPacket {
 
     received_packet.packet.* = blk: {
         while (true) {
-            for (0..self.connections.len) |i| {
-                const conn: *Connection = self.connections.at(i);
-                var des = Deserializer.init(self.allocator, conn.filledBuffer());
-                var packet = des.deserialize(Packet) catch |err| {
-                    switch (err) {
-                        // TODO: Don't check entire buffer before continuing (use packet length?)
-                        error.OutOfBytes => continue,
-                        error.OutOfMemory => unreachable,
-                    }
-                };
-                conn.skip(des.start);
+            {
+                self.connections_mutex.lock();
+                defer self.connections_mutex.unlock();
 
-                received_packet.connection_id = i;
-                break :blk packet;
+                for (0..self.connections.len) |i| {
+                    const conn: *Connection = self.connections.at(i);
+                    var des = Deserializer.init(fba.allocator(), conn.filledBuffer());
+                    var packet = des.deserialize(Packet) catch |err| {
+                        switch (err) {
+                            // TODO: Don't check entire buffer before continuing (use packet length?)
+                            error.OutOfBytes => continue,
+                            error.OutOfMemory => unreachable,
+                        }
+                    };
+                    conn.skip(des.start);
+
+                    received_packet.connection_id = i;
+                    break :blk packet;
+                }
             }
 
             const ready_connections = try os.poll(self.polls.items(.poll), 1000);
             log.debug("ready_connections {}/{}", .{ ready_connections, self.polls.len });
 
             if (ready_connections > 0) {
+                self.connections_mutex.lock();
+                defer self.connections_mutex.unlock();
+
                 var n = self.polls.len;
                 while (n > 0) : (n -= 1) {
                     var i = n - 1;
                     var conn: *Connection = self.polls.items(.conn)[i];
                     var poll: os.pollfd = self.polls.items(.poll)[i];
                     if ((poll.revents & os.POLL.HUP) != 0) {
-                        unreachable;
-                        // Remove connection
-                        //os.close(conn.fd);
-                        //server_context.remove_client(i);
+                        try self.unsafeRemoveConnection(i);
                     } else if ((poll.revents & os.POLL.IN) != 0) {
                         _ = try conn.read();
-                        //var buf: [1024]u8 = undefined;
-                        //var rd = try os.read(conn.fd, &buf);
-                        //var des = Deserializer.init(self.allocator, (&buf)[0..rd]);
-                        //const packet = try des.deserialize(Packet);
-                        //std.debug.assert(des.buf.len == 0); // TODO: buffering
-                        //received_packet.connection_id = i;
-                        //break :blk packet;
                     } else if (poll.revents != 0) {
                         log.warn("SERVER: unhandled pool revent 0x{x}", .{poll.revents});
                         unreachable;

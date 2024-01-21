@@ -8,6 +8,8 @@ const Deserializer = nc.Deserializer;
 pub const Packet = union(Kind) {
     const Self = @This();
 
+    pub const max_transmission_unit = 1472;
+
     pub const PacketHeader = packed struct {
         kind: Kind,
         packet_len: u16,
@@ -45,6 +47,8 @@ pub const Packet = union(Kind) {
 
     pub const UpdatePlayers = struct {
         players: []Player,
+
+        pub const max_player_amount = 50;
     };
 
     pub fn serialize(self: Self, ser: *Serializer) Serializer.Error!void {
@@ -68,7 +72,7 @@ pub const Packet = union(Kind) {
                 try ser.serialize(packet.player);
             },
             .update_players => |packet| {
-                std.debug.assert(packet.players.len < std.math.maxInt(u8));
+                std.debug.assert(packet.players.len <= UpdatePlayers.max_player_amount);
                 try ser.serialize(@as(u8, @intCast(packet.players.len)));
                 for (packet.players) |p| {
                     try ser.serialize(p);
@@ -127,14 +131,18 @@ pub const Packet = union(Kind) {
 };
 
 fn expectPacketEqualAfterEncode(packet: Packet) !void {
-    var buffer: [1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    var allocator = fba.allocator();
+    var ser_buffer: [Packet.max_transmission_unit]u8 = undefined;
+    var ser_fba = std.heap.FixedBufferAllocator.init(&ser_buffer);
 
-    var ser = Serializer.init(allocator);
+    var des_buffer: [2048]u8 = undefined;
+    var des_fba = std.heap.FixedBufferAllocator.init(&des_buffer);
+
+    var ser = Serializer.init(ser_fba.allocator());
     try ser.serialize(packet);
-    var de = Deserializer.init(allocator, ser.buf.items);
+    var de = Deserializer.init(des_fba.allocator(), ser.buf.items);
     var de_packet = try de.deserialize(Packet);
+
+    _ = try des_fba.allocator().create(Packet);
 
     try std.testing.expectEqualDeep(packet, de_packet);
 }
@@ -156,10 +164,10 @@ test "Encode and decode join_ok" {
 }
 
 test "Encode and decode move_players" {
-    var players = [_]Player{
-        .{ .id = 1, .x = 1.2, .y = 2.5 },
-        .{ .id = 2, .x = 2.2, .y = 2.5 },
-        .{ .id = 3, .x = 3.2, .y = 2.5 },
-    };
-    try expectPacketEqualAfterEncode(Packet{ .update_players = .{ .players = &players } });
+    var players: [Packet.UpdatePlayers.max_player_amount]Player = undefined;
+
+    for (0..Packet.UpdatePlayers.max_player_amount) |i| {
+        players[i] = .{ .id = i, .x = @as(f32, @floatFromInt(i)) * 3.57, .y = 2.5 };
+    }
+    try expectPacketEqualAfterEncode(Packet{ .update_players = .{ .players = players[0..Packet.UpdatePlayers.max_player_amount] } });
 }

@@ -11,8 +11,14 @@ pub const std_options = struct {
     pub const log_scope_levels = &@import("log.zig").scope_levels;
 };
 
+pub const GeneralPurposeAllocator = heap.GeneralPurposeAllocator(.{
+    .enable_memory_limit = true,
+    .retain_metadata = true,
+    //.verbose_log = true,
+});
+
 pub fn main() !void {
-    var gpa = heap.GeneralPurposeAllocator(.{}){};
+    var gpa = GeneralPurposeAllocator{};
     defer _ = gpa.deinit();
     var allocator = gpa.allocator();
 
@@ -22,7 +28,7 @@ pub fn main() !void {
     defer s.join();
 
     std.time.sleep(1E6);
-    game.start(allocator, address) catch |err| {
+    game.start(allocator) catch |err| {
         log.err("GAME: Failed to start game {}.", .{err});
     };
 }
