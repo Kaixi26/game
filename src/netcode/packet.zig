@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const nc = @import("netcode.zig");
 const Serializer = nc.Serializer;
 const Deserializer = nc.Deserializer;
+const rl = @import("raylib");
 
 pub const Packet = union(Kind) {
     const Self = @This();
@@ -48,7 +49,7 @@ pub const Packet = union(Kind) {
     pub const UpdatePlayers = struct {
         players: []Player,
 
-        pub const max_player_amount = 50;
+        pub const max_player_amount = 25;
     };
 
     pub fn serialize(self: Self, ser: *Serializer) Serializer.Error!void {
@@ -167,7 +168,11 @@ test "Encode and decode move_players" {
     var players: [Packet.UpdatePlayers.max_player_amount]Player = undefined;
 
     for (0..Packet.UpdatePlayers.max_player_amount) |i| {
-        players[i] = .{ .id = i, .x = @as(f32, @floatFromInt(i)) * 3.57, .y = 2.5 };
+        players[i] = .{
+            .id = i,
+            .pos = rl.Vector3.init(69, 420, 1337),
+            .vel = rl.Vector3.init(69, 420, 1337),
+        };
     }
     try expectPacketEqualAfterEncode(Packet{ .update_players = .{ .players = players[0..Packet.UpdatePlayers.max_player_amount] } });
 }

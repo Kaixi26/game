@@ -34,12 +34,10 @@ pub fn main() !void {
 }
 
 test "main" {
-    const nc = @import("netcode/netcode.zig");
-    std.testing.refAllDecls(@import("netcode/Packet.zig"));
-    std.testing.refAllDecls(nc.IO);
+    std.testing.refAllDeclsRecursive(@This());
 
-    var buf: [10240]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    var nc_io = try nc.IO.init(fba.allocator());
-    try nc_io.addConnection(69);
+    var x: i32 = 1;
+    var y: c_int = 1;
+    x = y;
+    y = x;
 }

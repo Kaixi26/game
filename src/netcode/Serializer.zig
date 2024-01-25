@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const rl = @import("raylib");
 
 const Self = @This();
 
@@ -54,4 +55,10 @@ pub fn serialize(self: *Self, value: anytype) Error!void {
             @compileError(std.fmt.comptimePrint("Cannot serialize value of type `{}`", .{T}));
         },
     }
+}
+
+pub fn serializeVector3(self: *Self, value: rl.Vector3) Error!void {
+    try self.serialize(value.x);
+    try self.serialize(value.y);
+    try self.serialize(value.z);
 }

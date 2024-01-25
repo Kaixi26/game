@@ -7,9 +7,7 @@ const log = @import("log.zig").server;
 const GameState = @import("GameState.zig");
 const Player = @import("Player.zig");
 const nc = @import("netcode/netcode.zig");
-const rl = @cImport({
-    @cInclude("raymath.h");
-});
+const rl = @import("raylib");
 
 var next_id: u64 = 1;
 
@@ -60,11 +58,13 @@ const ServerContext = struct {
             },
             .join => {
                 const player = blk: {
-                    self.game_state.lock();
-                    defer self.game_state.unlock();
                     defer next_id += 1;
 
-                    const player = Player{ .id = next_id, .x = 0, .y = 0 };
+                    const player = Player{
+                        .id = next_id,
+                        .pos = rl.Vector3.init(0, 0, 0),
+                        .vel = rl.Vector3.init(0, 0, 0),
+                    };
                     try self.game_state.append(player);
                     break :blk player;
                 };
@@ -76,9 +76,6 @@ const ServerContext = struct {
                 self.packet_send_manager.signalPacketsAdded();
             },
             .move => |payload| {
-                self.game_state.lock();
-                defer self.game_state.unlock();
-
                 if (self.game_state.find(payload.player.id)) |player| {
                     player.* = payload.player;
                 }
@@ -120,19 +117,19 @@ const ServerContext = struct {
         defer self.wait_next_tick();
 
         {
-            self.game_state.lock();
-            self.game_state.unlock();
             if (self.game_state.find(69)) |player| {
-                player.x += 5 * self.deltaSeconds();
-                if (player.x > 10) {
-                    player.x = -player.x;
+                player.pos.x += 100 * self.deltaSeconds();
+                if (player.pos.x > 100) {
+                    player.pos.x = -player.pos.x;
                 }
-                if (self.ticks % 60 == 0) {
-                    log.debug("{d:.3} {d:.3} {d:.3}", .{ player.x, self.deltaSeconds(), 5 * self.deltaSeconds() });
-                }
+                //if (self.ticks % 60 == 0) {
+                //    log.debug("{d:.3} {d:.3} {d:.3}", .{ player.x, self.deltaSeconds(), 5 * self.deltaSeconds() });
+                //}
             }
         }
+
         { // handle packets
+            // TODO: atomically pull packets?
             self.packet_recv_manager.mutex.lock();
             defer self.packet_recv_manager.mutex.unlock();
 
@@ -143,9 +140,6 @@ const ServerContext = struct {
         }
 
         { // send packets
-            self.game_state.lock();
-            defer self.game_state.unlock();
-
             try self.packet_send_manager.safeAppendSendPacket(.{
                 .packet = .{ .update_players = .{ .players = self.game_state.players.items } },
                 .kind = .broadcast,
@@ -168,7 +162,11 @@ pub fn accept_connections(nc_io: *nc.IO, sockfd: os.socket_t) !void {
 
 pub fn start(allocator: mem.Allocator, address: net.Address) !void {
     var sctx = try ServerContext.init(allocator);
-    try sctx.game_state.append(.{ .id = 69, .x = 0, .y = 0 });
+    try sctx.game_state.append(.{
+        .id = 69,
+        .pos = rl.Vector3.init(0, 0, 0),
+        .vel = rl.Vector3.init(0, 0, 0),
+    });
 
     var sockfd: os.socket_t = try os.socket(os.AF.INET, os.SOCK.STREAM, 0);
     try os.setsockopt(sockfd, os.SOL.SOCKET, os.SO.REUSEADDR, &mem.toBytes(@as(c_int, 1)));

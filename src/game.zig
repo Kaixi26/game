@@ -6,14 +6,11 @@ const net = std.net;
 const log = @import("log.zig").game;
 const GameState = @import("GameState.zig");
 const Player = @import("Player.zig");
+const Render = @import("Render.zig");
 const nc = @import("netcode/netcode.zig");
 const argsParser = @import("args.zig");
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("rlgl.h");
-});
-
-const velocity = 10;
+const rl = @import("raylib");
+const rm = @import("raylib-math");
 
 const GameContext = struct {
     const Self = @This();
@@ -28,21 +25,26 @@ const GameContext = struct {
     packet_send_manager: nc.PacketSendManager,
     packet_recv_manager: nc.PacketReceiveManager,
 
+    render: *Render,
+
     pub fn init(allocator: std.mem.Allocator) !GameContext {
         const nc_io = try allocator.create(nc.IO);
         nc_io.* = try nc.IO.init(allocator);
+
+        const render = try allocator.create(Render);
+        render.* = Render.init(allocator);
+        try render.loadModels();
         return .{
             .allocator = allocator,
             .game_state = .{ .allocator = allocator },
             .nc_io = nc_io,
             .packet_send_manager = nc.PacketSendManager.init(allocator),
             .packet_recv_manager = nc.PacketReceiveManager.init(allocator),
+            .render = render,
         };
     }
 
-    pub fn safeGetPlayer(self: *Self) ?*Player {
-        self.game_state.lock();
-        defer self.game_state.unlock();
+    pub fn getPlayer(self: *Self) ?*Player {
         if (self.player_id) |id| {
             return self.game_state.find(id);
         }
@@ -55,13 +57,14 @@ const GameContext = struct {
 
         switch (received_packet.packet.*) {
             .join_ok => |payload| {
-                self.game_state.players_mutex.lock();
-                defer self.game_state.players_mutex.unlock();
-
                 if (self.game_state.find(payload.id)) |player| {
                     _ = player;
                 } else {
-                    try self.game_state.players.append(self.game_state.allocator, .{ .id = payload.id, .x = 0, .y = 0 });
+                    try self.game_state.players.append(self.game_state.allocator, .{
+                        .id = payload.id,
+                        .pos = rl.Vector3.init(0, 0, 0),
+                        .vel = rl.Vector3.init(0, 0, 0),
+                    });
                 }
                 self.player_id = payload.id;
                 log.info("joined game with id {}", .{payload.id});
@@ -70,7 +73,9 @@ const GameContext = struct {
                 for (payload.players) |player| {
                     if (player.id != self.player_id) {
                         if (self.game_state.find(player.id)) |p| {
-                            p.* = player;
+                            p.pos = player.pos;
+                            p.vel = player.vel;
+                            //p.* = player;
                         } else {
                             try self.game_state.append(player);
                         }
@@ -80,6 +85,46 @@ const GameContext = struct {
             else => {
                 log.warn("Unhandled packet {}", .{received_packet.packet.*});
             },
+        }
+    }
+
+    pub fn handleReceivedPackets(self: *Self) !void {
+        self.packet_recv_manager.mutex.lock();
+        defer self.packet_recv_manager.mutex.unlock();
+
+        for (self.packet_recv_manager.received_packets.items) |received_packet| {
+            try self.handle_received_packet(received_packet);
+        }
+        self.packet_recv_manager.received_packets.clearRetainingCapacity();
+    }
+
+    pub fn handleSendPackets(self: *Self) !void {
+        if (self.elapsed_frames % 1 == 0) {
+            if (self.getPlayer()) |player| {
+                try self.packet_send_manager.safeAppendSendPacket(.{ .packet = .{ .move = .{ .player = player.* } }, .kind = .broadcast });
+            }
+        }
+
+        self.packet_send_manager.signalPacketsAdded();
+    }
+
+    pub fn handleInput(self: *Self) !void {
+        var velocity = rl.Vector3.init(0, 0, 0);
+        if (rl.isKeyDown(rl.KeyboardKey.key_up)) {
+            velocity.z -= 1;
+        }
+        if (rl.isKeyDown(rl.KeyboardKey.key_down)) {
+            velocity.z += 1;
+        }
+        if (rl.isKeyDown(rl.KeyboardKey.key_right)) {
+            velocity.x += 1;
+        }
+        if (rl.isKeyDown(rl.KeyboardKey.key_left)) {
+            velocity.x -= 1;
+        }
+
+        if (self.getPlayer()) |player| {
+            player.vel = rm.vector3Scale(velocity, Player.base_velocity);
         }
     }
 };
@@ -117,6 +162,14 @@ const GameArgsSpec = struct {
 };
 
 pub fn start(allocator: std.mem.Allocator) !void {
+    const screen_width = 800;
+    const screen_height = 600;
+
+    rl.setTraceLogLevel(rl.TraceLogLevel.log_error);
+    rl.setTargetFPS(60);
+    rl.initWindow(screen_width, screen_height, "raylib [core] example - basic window");
+    defer rl.closeWindow();
+
     var gctx = try GameContext.init(allocator);
 
     const parsed_args = argsParser.parseForCurrentProcess(GameArgsSpec, allocator, .print) catch |err| {
@@ -135,97 +188,81 @@ pub fn start(allocator: std.mem.Allocator) !void {
     var handler = try std.Thread.spawn(.{}, handle_connection, .{ &gctx, address });
     defer handler.join();
 
-    const screen_width = 800;
-    const screen_height = 600;
+    var camera = std.mem.zeroes(rl.Camera);
+    camera.position = .{ .x = 0.0, .y = 10.0, .z = 10.0 };
+    camera.target = .{ .x = 0.0, .y = 2.0, .z = 0.0 };
+    camera.up = .{ .x = 0.0, .y = 1.0, .z = 0.0 };
+    camera.fovy = 45.0;
+    camera.projection = rl.CameraProjection.camera_perspective;
 
-    rl.SetTraceLogLevel(rl.LOG_ERROR);
-
-    rl.InitWindow(screen_width, screen_height, "raylib [core] example - basic window");
-    defer rl.CloseWindow();
-
-    rl.SetTargetFPS(60);
-
-    while (!rl.WindowShouldClose()) {
+    while (!rl.windowShouldClose()) {
         var scratchpad: [1024]u8 = undefined;
-        var camera = std.mem.zeroes(rl.Camera2D);
-        camera.zoom = 1;
-        camera.offset.x = @as(f32, @floatFromInt(rl.GetScreenWidth())) / 2;
-        camera.offset.y = @as(f32, @floatFromInt(rl.GetScreenHeight())) / 2;
 
-        rl.ClearBackground(rl.RAYWHITE);
-
-        if (gctx.safeGetPlayer()) |player| {
-            if (rl.IsKeyDown(rl.KEY_UP)) {
-                player.y -= 10;
-            }
-            if (rl.IsKeyDown(rl.KEY_DOWN)) {
-                player.y += 10;
-            }
-            if (rl.IsKeyDown(rl.KEY_RIGHT)) {
-                player.x += 10;
-            }
-            if (rl.IsKeyDown(rl.KEY_LEFT)) {
-                player.x -= 10;
-            }
-            camera.target.x = player.x;
-            camera.target.y = player.y;
+        if (gctx.getPlayer()) |p| {
+            camera.target = rl.Vector3.init(p.pos.x / 100, 0, p.pos.y / 100);
+            camera.position = rl.Vector3.init(p.pos.x / 100, 10, p.pos.y / 100 + 10);
         }
 
-        rl.BeginDrawing();
-        defer rl.EndDrawing();
+        var camera2d = std.mem.zeroes(rl.Camera2D);
+        camera2d.zoom = 1;
+        camera2d.offset.x = @as(f32, @floatFromInt(rl.getScreenWidth())) / 2;
+        camera2d.offset.y = @as(f32, @floatFromInt(rl.getScreenHeight())) / 2;
 
-        rl.BeginMode2D(camera);
+        try gctx.handleInput();
+
+        if (gctx.getPlayer()) |player| {
+            camera2d.target.x = player.pos.x;
+            camera2d.target.y = player.pos.z;
+        }
+
+        rl.clearBackground(rl.Color.ray_white);
+
+        rl.beginDrawing();
+
+        {
+            rl.beginMode3D(camera);
+            gctx.game_state.draw3D(gctx.render);
+            rl.endMode3D();
+        }
+
+        {
+            rl.beginMode2D(camera2d);
+            rl.endMode2D();
+        }
+
+        { // Draw FPS/Ping
+            var ping_text = try std.fmt.bufPrint(&scratchpad, "PING: {}" ++ .{0}, .{gctx.ping.load(.Monotonic)});
+            rl.drawFPS(0, 0);
+            rl.drawText(@as([:0]const u8, @ptrCast(ping_text)), 0, 20, 20, rl.Color.lime);
+        }
+
+        //rl.updateModelAnimation(model, animation, animation_frame);
 
         { // Draw grid and reference point at 0,0
-            rl.rlPushMatrix();
-            rl.rlTranslatef(0, 25 * 50, 0);
-            rl.rlRotatef(90, 1, 0, 0);
-            rl.DrawGrid(100, 50);
-            rl.rlPopMatrix();
-            rl.DrawCircle(0, 0, 10, rl.PINK);
+            //rl.pushMatrix();
+            //rl.translatef(0, 25 * 50, 0);
+            //rl.rotatef(90, 1, 0, 0);
+            //rl.drawGrid(100, 50);
+            //rl.popMatrix();
+            //rl.drawCircle(0, 0, 10, rl.Color.pink);
         }
 
         { // Draw players
-            gctx.game_state.lock();
-            defer gctx.game_state.unlock();
-
             for (gctx.game_state.players.items) |player| {
-                rl.DrawCircle(@intFromFloat(player.x), @intFromFloat(player.y), @as(f32, @floatFromInt(rl.GetScreenWidth())) / 16, rl.BLUE);
+                rl.drawCircle(@intFromFloat(player.pos.x), @intFromFloat(player.pos.y), @as(f32, @floatFromInt(rl.getScreenWidth())) / 16, rl.Color.blue);
                 var ping_text = try std.fmt.bufPrint(&scratchpad, "{}" ++ .{0}, .{player.id});
-                rl.DrawText(@as([*:0]const u8, @ptrCast(ping_text)), @intFromFloat(player.x), @intFromFloat(player.y), 20, rl.BLACK);
+                rl.drawText(@as([:0]const u8, @ptrCast(ping_text)), @intFromFloat(player.pos.x), @intFromFloat(player.pos.y), 20, rl.Color.black);
             }
         }
 
-        { // handle packets
-            gctx.packet_recv_manager.mutex.lock();
-            defer gctx.packet_recv_manager.mutex.unlock();
+        rl.endDrawing();
 
-            for (gctx.packet_recv_manager.received_packets.items) |received_packet| {
-                try gctx.handle_received_packet(received_packet);
-            }
-            gctx.packet_recv_manager.received_packets.clearRetainingCapacity();
-        }
-
-        rl.EndMode2D();
-
-        {
-            var ping_text = try std.fmt.bufPrint(&scratchpad, "PING: {}" ++ .{0}, .{gctx.ping.load(.Monotonic)});
-            rl.DrawFPS(0, 0);
-            rl.DrawText(@as([*:0]const u8, @ptrCast(ping_text)), 0, 20, 20, rl.LIME);
-        }
-
-        { // send packets
-            if (gctx.elapsed_frames % 1 == 0) {
-                if (gctx.safeGetPlayer()) |player| {
-                    try gctx.packet_send_manager.safeAppendSendPacket(.{ .packet = .{ .move = .{ .player = player.* } }, .kind = .broadcast });
-                }
-            }
-
-            gctx.packet_send_manager.signalPacketsAdded();
-        }
+        try gctx.handleReceivedPackets();
+        try gctx.handleSendPackets();
 
         const frames = @atomicRmw(u64, &gctx.elapsed_frames, .Add, 1, .Monotonic);
         _ = frames;
+        gctx.game_state.tick(rl.getFrameTime());
     }
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const rl = @import("raylib");
 
 const Self = @This();
 pub const Error = error{
@@ -56,4 +57,12 @@ pub fn deserialize(self: *Self, comptime T: type) Error!T {
             @compileError(std.fmt.comptimePrint("Cannot deserialize value of type `{}`", .{T}));
         },
     }
+}
+
+pub fn deserializeVector3(self: *Self) Error!rl.Vector3 {
+    return rl.Vector3{
+        .x = try self.deserialize(f32),
+        .y = try self.deserialize(f32),
+        .z = try self.deserialize(f32),
+    };
 }

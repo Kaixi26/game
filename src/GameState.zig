@@ -1,22 +1,13 @@
 const std = @import("std");
 const Player = @import("Player.zig");
 const Mutex = std.Thread.Mutex;
+const Render = @import("Render.zig");
+const rl = @import("raylib");
 
 const Self = @This();
 
-const Players = std.ArrayListUnmanaged(Player);
-
 allocator: std.mem.Allocator,
-players_mutex: Mutex = Mutex{},
-players: Players = Players{},
-
-pub fn lock(self: *Self) void {
-    return self.players_mutex.lock();
-}
-
-pub fn unlock(self: *Self) void {
-    return self.players_mutex.unlock();
-}
+players: std.ArrayListUnmanaged(Player) = .{},
 
 pub fn append(self: *Self, player: Player) std.mem.Allocator.Error!void {
     return try self.players.append(self.allocator, player);
@@ -29,4 +20,17 @@ pub fn find(self: *Self, id: Player.Id) ?*Player {
         }
     }
     return null;
+}
+
+pub fn tick(self: *Self, elapsed_s: f32) void {
+    for (self.players.items) |*player| {
+        player.tick(elapsed_s);
+    }
+}
+
+pub fn draw3D(self: *Self, render: *Render) void {
+    rl.drawGrid(10, 1.0);
+    for (self.players.items) |*player| {
+        player.draw(render);
+    }
 }

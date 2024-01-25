@@ -1,6 +1,7 @@
 const std = @import("std");
 const CrossTarget = std.zig.CrossTarget;
 const Step = std.build.Step;
+const Build = std.build;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -11,12 +12,20 @@ pub const Raylib = struct {
     optimize: std.builtin.Mode,
     b: *std.Build,
 
-    pub fn artifactAll(self: Raylib) *Step.Compile {
-        const raylib = self.b.dependency("raylib", .{
+    pub fn artifact(self: Raylib) *Step.Compile {
+        const raylib = self.b.dependency("raylib-zig", .{
             .target = self.target,
             .optimize = self.optimize,
         });
         return raylib.artifact("raylib");
+    }
+
+    pub fn module(self: Raylib) *Build.Module {
+        const raylib = self.b.dependency("raylib-zig", .{
+            .target = self.target,
+            .optimize = self.optimize,
+        });
+        return raylib.module("raylib");
     }
 };
 
@@ -44,6 +53,13 @@ pub const Executable = struct {
         for (options.artifacts) |artifact| {
             exe.linkLibrary(artifact);
         }
+
+        const raylib = self.b.dependency("raylib", .{ .target = self.target, .optimize = self.optimize });
+        const raylib_zig = self.b.dependency("raylib-zig", .{ .target = self.target, .optimize = self.optimize });
+
+        exe.linkLibrary(raylib.artifact("raylib"));
+        exe.addModule("raylib", raylib_zig.module("raylib"));
+        exe.addModule("raylib-math", raylib_zig.module("raylib-math"));
 
         exe.linkLibC();
 
@@ -73,6 +89,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .b = b,
     };
+    _ = rl;
 
     const executable = Executable{
         .target = target,
@@ -86,7 +103,7 @@ pub fn build(b: *std.Build) void {
         _ = executable.register(ExecutableOptions{
             .name = "run",
             .main_path = "src/main.zig",
-            .artifacts = &[_]*Step.Compile{rl.artifactAll()},
+            .artifacts = &[_]*Step.Compile{},
             .description = "Run the game and server",
             .run = true,
         });
@@ -94,7 +111,7 @@ pub fn build(b: *std.Build) void {
         _ = executable.register(ExecutableOptions{
             .name = "game",
             .main_path = "src/game.zig",
-            .artifacts = &[_]*Step.Compile{rl.artifactAll()},
+            .artifacts = &[_]*Step.Compile{},
             .description = "Run the game",
         });
     }
@@ -116,6 +133,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+
+        const raylib = b.dependency("raylib", .{ .target = target, .optimize = optimize });
+        const raylib_zig = b.dependency("raylib-zig", .{ .target = target, .optimize = optimize });
+
+        unit_tests.linkLibrary(raylib.artifact("raylib"));
+        unit_tests.addModule("raylib", raylib_zig.module("raylib"));
+
+        unit_tests.linkLibC();
 
         const run_unit_tests = b.addRunArtifact(unit_tests);
 

@@ -4,8 +4,12 @@
     .paths = .{"src"},
     .dependencies = .{
         .raylib = .{
-            .url = "https://github.com/raysan5/raylib/archive/refs/tags/5.0.tar.gz",
-            .hash = "1220c28847ca8e8756734ae84355802b764c9d9cf4de057dbc6fc2b15c56e726f27b",
+            .url = "https://github.com/raysan5/raylib/archive/6094869e3e845e90e1e8ae41b98e889fb3e13e78.tar.gz",
+            .hash = "12203b7a16bcf8d7fe4c9990a46d92b6f2e35531a4b82eb3bdf8ba4a0dbcc5f21415",
+        },
+        .@"raylib-zig" = .{
+            .url = "https://github.com/Kaixi26/raylib-zig/archive/588675a3e648cf537ab9179f527a25c31514b032.tar.gz",
+            .hash = "1220b96a535152be414826dc028a8c2739376e99f95b72b4b0f761835a8d462a0e06",
         },
     },
 }
